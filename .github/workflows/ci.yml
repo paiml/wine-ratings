@@ -1,0 +1,72 @@
+# CI for wine-ratings.
+#
+# The `gate` job below exists because the paiml org ruleset "Green Main"
+# requires exactly one status context, literally named `gate`. This repo
+# emitted no such check, so every PR reported BLOCKED with every visible check
+# green and nothing a contributor could do about it.
+#
+# `gate` is an AGGREGATOR: it has no checks of its own, it fails whenever the
+# `checks` matrix below failed, was cancelled, or was skipped. The real work is
+# in ci/checks.py, where every check prints its denominator and fails when that
+# denominator is zero.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: checks (${{ matrix.check }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # workflows    - every Actions workflow parses as YAML and declares jobs
+        # notebooks    - valid nbformat; every code cell compiles as Python
+        # dataset      - wine-ratings.csv parses; no ragged rows; ratings numeric
+        # crossref     - paths/columns the notebook and README reference exist
+        # requirements - every dependency is an exact `name==version` pin
+        check: [workflows, notebooks, dataset, crossref, requirements]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install check dependencies
+        run: python -m pip install --disable-pip-version-check --quiet pyyaml
+
+      - name: Run ${{ matrix.check }} check
+        run: python ci/checks.py ${{ matrix.check }}
+
+  # The context the org ruleset requires. Named `gate` as both the job id and
+  # the display name -- the ruleset matches the context, so renaming this
+  # re-blocks every PR in the repo.
+  gate:
+    name: gate
+    needs: [checks]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate check results
+        run: |
+          set -euo pipefail
+          result='${{ needs.checks.result }}'
+          echo "checks: ${result:-<none>}"
+          if [ -z "$result" ]; then
+            echo "gate: FAIL - the checks job reported no result at all"
+            exit 1
+          fi
+          if [ "$result" != "success" ]; then
+            echo "gate: FAIL - checks=$result (this gate fails on failure,"
+            echo "      cancellation AND skip; a gate that passes when nothing"
+            echo "      ran is worse than no gate)"
+            exit 1
+          fi
+          echo "gate: PASS - all checks succeeded"
